@@ -1,0 +1,79 @@
+import os
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
+import textract
+from PyPDF2 import PdfReader
+
+# === Azure Configuration ===
+endpoint = "https://<your-search-service>.search.windows.net"
+index_name = "<your-index-name>"
+api_key = "<your-admin-key>"
+folder_path = "my_documents"
+
+# === Azure Search Client ===
+search_client = SearchClient(
+    endpoint=endpoint,
+    index_name=index_name,
+    credential=AzureKeyCredential(api_key)
+)
+
+# === Extract Text Functions ===
+def extract_txt(file_path):
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+def extract_pdf(file_path):
+    reader = PdfReader(file_path)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() or ""
+    return text
+
+def extract_doc(file_path):
+    return textract.process(file_path).decode("utf-8", errors="ignore")
+
+# === Document Loader ===
+def read_documents_from_folder(folder_path):
+    documents = []
+    supported_exts = [".txt", ".pdf", ".doc"]
+
+    for i, filename in enumerate(os.listdir(folder_path)):
+        file_path = os.path.join(folder_path, filename)
+        ext = os.path.splitext(filename)[1].lower()
+
+        if not os.path.isfile(file_path) or ext not in supported_exts:
+            continue
+
+        try:
+            if ext == ".txt":
+                content = extract_txt(file_path)
+            elif ext == ".pdf":
+                content = extract_pdf(file_path)
+            elif ext == ".doc":
+                content = extract_doc(file_path)
+            else:
+                continue
+
+            doc = {
+                "Id": str(i + 1),
+                "title": filename,
+                "description": content[:200],  # Short preview
+                "content": content
+            }
+            documents.append(doc)
+        except Exception as e:
+            print(f"Failed to process {filename}: {e}")
+
+    return documents
+
+# === Upload to Azure Search ===
+documents = read_documents_from_folder(folder_path)
+
+if documents:
+    batch_size = 1000
+    for i in range(0, len(documents), batch_size):
+        batch = documents[i:i+batch_size]
+        result = search_client.upload_documents(documents=batch)
+        print(f"Uploaded batch {i // batch_size + 1}: {len(result)} documents")
+else:
+    print("No valid documents found to upload.")
