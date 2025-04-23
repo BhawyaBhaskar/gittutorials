@@ -1,38 +1,61 @@
-import os
-from dotenv import load_dotenv
+from langchain.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, TextLoader
+from langchain.text_splitter import CharacterTextSplitter
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
 
-# Load environment variables
-load_dotenv()
-endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
-api_key = os.getenv("AZURE_SEARCH_KEY")
-index_name = os.getenv("AZURE_SEARCH_INDEX")
+# Azure AI Search service details
+service_endpoint = "https://<your-service-name>.search.windows.net"
+api_key = "<your-api-key>"
+index_name = "<your-index-name>"
 
-# Initialize SearchClient
-search_client = SearchClient(
-    endpoint=endpoint,
-    index_name=index_name,
-    credential=AzureKeyCredential(api_key)
+# Initialize the SearchClient
+credential = AzureKeyCredential(api_key)
+search_client = SearchClient(endpoint=service_endpoint, index_name=index_name, credential=credential)
+
+# Define file paths for your documents
+pdf_path = "path/to/your/document.pdf"
+docx_path = "path/to/your/document.docx"
+txt_path = "path/to/your/document.txt"
+
+# Load documents using LangChain loaders
+pdf_loader = PyPDFLoader(pdf_path)
+docx_loader = UnstructuredWordDocumentLoader(docx_path)
+txt_loader = TextLoader(txt_path)
+
+pdf_documents = pdf_loader.load()
+docx_documents = docx_loader.load()
+txt_documents = txt_loader.load()
+
+# Combine all loaded documents
+all_documents = pdf_documents + docx_documents + txt_documents
+
+# Initialize the text splitter
+text_splitter = CharacterTextSplitter(
+    separator="\n",
+    chunk_size=1000,
+    chunk_overlap=200
 )
 
-# Step 1: Fetch all document IDs
-print("Fetching document IDs...")
-all_ids = []
-results = search_client.search(search_text="*", select=["Id"], top=1000)
+# Split documents into chunks
+split_documents = text_splitter.split_documents(all_documents)
 
-for doc in results:
-    all_ids.append({"Id": doc["Id"]})  # 'Id' must match your index's key field name
+# Prepare documents for Azure AI Search
+search_documents = []
+for idx, doc in enumerate(split_documents):
+    search_doc = {
+        "id": f"doc-{idx}",
+        "content": doc.page_content,
+        "source": doc.metadata.get("source", "unknown")
+    }
+    search_documents.append(search_doc)
 
-print(f"Found {len(all_ids)} documents to delete.")
-
-# Step 2: Delete all documents by ID
-if all_ids:
-    result = search_client.delete_documents(documents=all_ids)
-
-    print("\nDelete Results:")
-    for r in result:
-        status = "Success" if 200 <= r["statusCode"] < 300 else "Failed"
-        print(f" - ID: {r['key']} | Status: {status} (Code: {r['statusCode']})")
-else:
-    print("No documents found to delete.")
+# Upload documents in batches
+batch_size = 1000  # Azure AI Search allows up to 1000 documents per batch
+for i in range(0, len(search_documents), batch_size):
+    batch = search_documents[i:i + batch_size]
+    try:
+        result = search_client.upload_documents(documents=batch)
+        succeeded = sum(1 for r in result if r.succeeded)
+        print(f"Batch {i // batch_size + 1}: {succeeded} documents uploaded successfully.")
+    except Exception as e:
+        print(f"An error occurred while uploading batch {i // batch_size + 1}: {e}")
