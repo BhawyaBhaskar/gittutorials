@@ -1,15 +1,4 @@
-import os
-from dotenv import load_dotenv
-from azure.core.credentials import AzureKeyCredential
-from azure.search.documents import SearchClient
-
-# Load environment variables
-load_dotenv()
-endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
-api_key = os.getenv("AZURE_SEARCH_KEY")
-index_name = os.getenv("AZURE_SEARCH_INDEX")
-
-# Function to retrieve document IDs
+Function to retrieve document IDs
 def get_document_ids(endpoint, api_key, index_name, top=10):
     """
     Retrieves document IDs from an Azure Search index.
