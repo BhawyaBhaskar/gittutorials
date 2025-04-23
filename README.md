@@ -1,29 +1,38 @@
-Function to retrieve document IDs
-def get_document_ids(endpoint, api_key, index_name, top=10):
-    """
-    Retrieves document IDs from an Azure Search index.
+import os
+from dotenv import load_dotenv
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
 
-    :param endpoint: Azure Search endpoint
-    :param api_key: Azure Search admin/query key
-    :param index_name: Name of the index
-    :param top: Number of documents to retrieve
-    :return: List of document IDs
-    """
-    search_client = SearchClient(
-        endpoint=endpoint,
-        index_name=index_name,
-        credential=AzureKeyCredential(api_key)
-    )
+# Load environment variables
+load_dotenv()
+endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
+api_key = os.getenv("AZURE_SEARCH_KEY")
+index_name = os.getenv("AZURE_SEARCH_INDEX")
 
-    results = search_client.search(search_text="*", top=top, select=["Id"])
+# Initialize SearchClient
+search_client = SearchClient(
+    endpoint=endpoint,
+    index_name=index_name,
+    credential=AzureKeyCredential(api_key)
+)
 
-    ids = []
-    for doc in results:
-        ids.append(doc["Id"])
-    return ids
+# Step 1: Fetch all document IDs
+print("Fetching document IDs...")
+all_ids = []
+results = search_client.search(search_text="*", select=["Id"], top=1000)
 
-# Call the function and print document IDs
-doc_ids = get_document_ids(endpoint, api_key, index_name, top=5)
-print("Document IDs:")
-for doc_id in doc_ids:
-    print(f" - {doc_id}")
+for doc in results:
+    all_ids.append({"Id": doc["Id"]})  # 'Id' must match your index's key field name
+
+print(f"Found {len(all_ids)} documents to delete.")
+
+# Step 2: Delete all documents by ID
+if all_ids:
+    result = search_client.delete_documents(documents=all_ids)
+
+    print("\nDelete Results:")
+    for r in result:
+        status = "Success" if 200 <= r["statusCode"] < 300 else "Failed"
+        print(f" - ID: {r['key']} | Status: {status} (Code: {r['statusCode']})")
+else:
+    print("No documents found to delete.")
