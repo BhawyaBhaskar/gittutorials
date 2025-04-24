@@ -1,61 +1,58 @@
-from langchain.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, TextLoader
-from langchain.text_splitter import CharacterTextSplitter
-from azure.core.credentials import AzureKeyCredential
+import os
+from langchain.document_loaders import PyPDFLoader, TextLoader, UnstructuredWordDocumentLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from azure.search.documents import SearchClient
+from azure.core.credentials import AzureKeyCredential
 
-# Azure AI Search service details
-service_endpoint = "https://<your-service-name>.search.windows.net"
-api_key = "<your-api-key>"
-index_name = "<your-index-name>"
+# Azure Search credentials
+AZURE_SEARCH_ENDPOINT = "https://<your-search-service>.search.windows.net"
+AZURE_SEARCH_KEY = "<your-key>"
+AZURE_SEARCH_INDEX = "<your-index-name>"
 
-# Initialize the SearchClient
-credential = AzureKeyCredential(api_key)
-search_client = SearchClient(endpoint=service_endpoint, index_name=index_name, credential=credential)
-
-# Define file paths for your documents
-pdf_path = "path/to/your/document.pdf"
-docx_path = "path/to/your/document.docx"
-txt_path = "path/to/your/document.txt"
-
-# Load documents using LangChain loaders
-pdf_loader = PyPDFLoader(pdf_path)
-docx_loader = UnstructuredWordDocumentLoader(docx_path)
-txt_loader = TextLoader(txt_path)
-
-pdf_documents = pdf_loader.load()
-docx_documents = docx_loader.load()
-txt_documents = txt_loader.load()
-
-# Combine all loaded documents
-all_documents = pdf_documents + docx_documents + txt_documents
-
-# Initialize the text splitter
-text_splitter = CharacterTextSplitter(
-    separator="\n",
-    chunk_size=1000,
-    chunk_overlap=200
+# Initialize SearchClient
+search_client = SearchClient(
+    endpoint=AZURE_SEARCH_ENDPOINT,
+    index_name=AZURE_SEARCH_INDEX,
+    credential=AzureKeyCredential(AZURE_SEARCH_KEY)
 )
 
-# Split documents into chunks
-split_documents = text_splitter.split_documents(all_documents)
+# Directory containing your documents
+folder_path = "/path/to/your/folder"
 
-# Prepare documents for Azure AI Search
-search_documents = []
-for idx, doc in enumerate(split_documents):
-    search_doc = {
-        "id": f"doc-{idx}",
-        "content": doc.page_content,
-        "source": doc.metadata.get("source", "unknown")
-    }
-    search_documents.append(search_doc)
+# File loader mapping
+def load_file(file_path):
+    ext = file_path.lower().split('.')[-1]
+    if ext == 'pdf':
+        return PyPDFLoader(file_path).load()
+    elif ext == 'txt':
+        return TextLoader(file_path).load()
+    elif ext in ['doc', 'docx']:
+        return UnstructuredWordDocumentLoader(file_path).load()
+    else:
+        return []
 
-# Upload documents in batches
-batch_size = 1000  # Azure AI Search allows up to 1000 documents per batch
-for i in range(0, len(search_documents), batch_size):
-    batch = search_documents[i:i + batch_size]
-    try:
-        result = search_client.upload_documents(documents=batch)
-        succeeded = sum(1 for r in result if r.succeeded)
-        print(f"Batch {i // batch_size + 1}: {succeeded} documents uploaded successfully.")
-    except Exception as e:
-        print(f"An error occurred while uploading batch {i // batch_size + 1}: {e}")
+# Chunking method
+def chunk_documents(docs):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50
+    )
+    return splitter.split_documents(docs)
+
+# Index each chunk
+def index_chunks(chunks):
+    for i, chunk in enumerate(chunks):
+        doc = {
+            "id": f"doc_{i}",
+            "content": chunk.page_content,
+            "metadata": chunk.metadata
+        }
+        search_client.upload_documents(documents=[doc])
+
+# Main process
+for file_name in os.listdir(folder_path):
+    full_path = os.path.join(folder_path, file_name)
+    if os.path.isfile(full_path):
+        docs = load_file(full_path)
+        chunks = chunk_documents(docs)
+        index_chunks(chunks)
