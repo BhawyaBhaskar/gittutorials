@@ -1,3 +1,19 @@
+project_root/
+├── vector_engine/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── upload_documents.py
+│   ├── vector_search.py
+│   └── hybrid_search.py
+├── requirements.txt
+
+# --- config.py ---
+AZURE_SEARCH_ENDPOINT = "https://<your-service>.search.windows.net"
+AZURE_SEARCH_KEY = "<your-search-key>"
+AZURE_SEARCH_INDEX = "<your-index-name>"
+OPENAI_API_KEY = "<your-openai-api-key>"
+
+# --- upload_documents.py ---
 import os
 from langchain_community.document_loaders import (
     PyPDFLoader, TextLoader, Docx2txtLoader, UnstructuredHTMLLoader
@@ -6,17 +22,15 @@ from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
-from config import AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_KEY, AZURE_SEARCH_INDEX, OPENAI_API_KEY
+from vector_engine import config
 
-# Clients
-embedding_model = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+embedding_model = OpenAIEmbeddings(openai_api_key=config.OPENAI_API_KEY)
 search_client = SearchClient(
-    endpoint=AZURE_SEARCH_ENDPOINT,
-    index_name=AZURE_SEARCH_INDEX,
-    credential=AzureKeyCredential(AZURE_SEARCH_KEY)
+    endpoint=config.AZURE_SEARCH_ENDPOINT,
+    index_name=config.AZURE_SEARCH_INDEX,
+    credential=AzureKeyCredential(config.AZURE_SEARCH_KEY)
 )
 
-# Loaders
 def load_file(file_path):
     ext = file_path.lower().split('.')[-1]
     if ext == 'pdf':
@@ -27,17 +41,12 @@ def load_file(file_path):
         return Docx2txtLoader(file_path).load()
     elif ext == 'html':
         return UnstructuredHTMLLoader(file_path).load()
-    else:
-        return []
+    return []
 
-# Split text into chunks
 def chunk_documents(docs):
-    splitter = CharacterTextSplitter(
-        separator="\n", chunk_size=500, chunk_overlap=50
-    )
+    splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     return splitter.split_documents(docs)
 
-# Upload chunks to Azure Search
 def index_chunks(doc_id, chunks):
     for i, chunk in enumerate(chunks):
         embedding = embedding_model.embed_query(chunk.page_content)
@@ -50,7 +59,6 @@ def index_chunks(doc_id, chunks):
         }
         search_client.upload_documents(documents=[doc])
 
-# Main process
 def process_folder(folder_path):
     for file_name in os.listdir(folder_path):
         full_path = os.path.join(folder_path, file_name)
@@ -62,5 +70,83 @@ def process_folder(folder_path):
             chunks = chunk_documents(docs)
             index_chunks(doc_id, chunks)
 
-if __name__ == "__main__":
-    process_folder("/path/to/your/folder")
+# --- vector_search.py ---
+import requests
+import time
+from langchain.embeddings import OpenAIEmbeddings
+from vector_engine import config
+
+embedding_model = OpenAIEmbeddings(openai_api_key=config.OPENAI_API_KEY)
+
+def get_vector_from_query(query):
+    return embedding_model.embed_query(query)
+
+def vector_search(query, k=5):
+    start_time = time.time()
+    embedding = get_vector_from_query(query)
+
+    url = f"{config.AZURE_SEARCH_ENDPOINT}/indexes/{config.AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": config.AZURE_SEARCH_KEY
+    }
+    body = {
+        "vector": {
+            "value": embedding,
+            "fields": "embedding",
+            "k": k
+        },
+        "select": "id,title,description,content",
+        "top": k
+    }
+
+    response = requests.post(url, headers=headers, json=body)
+    response.raise_for_status()
+
+    duration = time.time() - start_time
+    print(f"[Vector Search] Query took {duration:.2f} seconds")
+    return response.json()
+
+# --- hybrid_search.py ---
+import requests
+import time
+from langchain.embeddings import OpenAIEmbeddings
+from vector_engine import config
+
+embedding_model = OpenAIEmbeddings(openai_api_key=config.OPENAI_API_KEY)
+
+def hybrid_search(query, k=5):
+    start_time = time.time()
+    embedding = embedding_model.embed_query(query)
+
+    url = f"{config.AZURE_SEARCH_ENDPOINT}/indexes/{config.AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": config.AZURE_SEARCH_KEY
+    }
+    body = {
+        "search": query,
+        "vector": {
+            "value": embedding,
+            "fields": "embedding",
+            "k": k
+        },
+        "searchFields": "title,content",
+        "select": "id,title,description,content",
+        "top": k
+    }
+
+    response = requests.post(url, headers=headers, json=body)
+    response.raise_for_status()
+
+    duration = time.time() - start_time
+    print(f"[Hybrid Search] Query took {duration:.2f} seconds")
+    return response.json()
+
+# --- requirements.txt ---
+langchain
+openai
+azure-search-documents
+unstructured
+python-docx
+PyMuPDF
