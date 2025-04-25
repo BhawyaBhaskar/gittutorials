@@ -8,10 +8,13 @@ project_root/
 ├── requirements.txt
 
 # --- config.py ---
-AZURE_SEARCH_ENDPOINT = "https://<your-service>.search.windows.net"
+AZURE_SEARCH_ENDPOINT = "https://<your-search-resource>.search.windows.net"
 AZURE_SEARCH_KEY = "<your-search-key>"
 AZURE_SEARCH_INDEX = "<your-index-name>"
-OPENAI_API_KEY = "<your-openai-api-key>"
+AZURE_OPENAI_KEY = "<your-shared-openai-api-key>"
+AZURE_OPENAI_ENDPOINT = "https://<your-target-uri>.openai.azure.com"
+AZURE_OPENAI_DEPLOYMENT = "embedding-model"
+AZURE_OPENAI_VERSION = "2023-05-15"
 
 # --- upload_documents.py ---
 import os
@@ -19,12 +22,18 @@ from langchain_community.document_loaders import (
     PyPDFLoader, TextLoader, Docx2txtLoader, UnstructuredHTMLLoader
 )
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
+from langchain.embeddings import AzureOpenAIEmbeddings
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from vector_engine import config
 
-embedding_model = OpenAIEmbeddings(openai_api_key=config.OPENAI_API_KEY)
+embedding_model = AzureOpenAIEmbeddings(
+    openai_api_key=config.AZURE_OPENAI_KEY,
+    openai_api_base=config.AZURE_OPENAI_ENDPOINT,
+    openai_api_version=config.AZURE_OPENAI_VERSION,
+    deployment=config.AZURE_OPENAI_DEPLOYMENT
+)
+
 search_client = SearchClient(
     endpoint=config.AZURE_SEARCH_ENDPOINT,
     index_name=config.AZURE_SEARCH_INDEX,
@@ -73,10 +82,15 @@ def process_folder(folder_path):
 # --- vector_search.py ---
 import requests
 import time
-from langchain.embeddings import OpenAIEmbeddings
+from langchain.embeddings import AzureOpenAIEmbeddings
 from vector_engine import config
 
-embedding_model = OpenAIEmbeddings(openai_api_key=config.OPENAI_API_KEY)
+embedding_model = AzureOpenAIEmbeddings(
+    openai_api_key=config.AZURE_OPENAI_KEY,
+    openai_api_base=config.AZURE_OPENAI_ENDPOINT,
+    openai_api_version=config.AZURE_OPENAI_VERSION,
+    deployment=config.AZURE_OPENAI_DEPLOYMENT
+)
 
 def get_vector_from_query(query):
     return embedding_model.embed_query(query)
@@ -110,10 +124,15 @@ def vector_search(query, k=5):
 # --- hybrid_search.py ---
 import requests
 import time
-from langchain.embeddings import OpenAIEmbeddings
+from langchain.embeddings import AzureOpenAIEmbeddings
 from vector_engine import config
 
-embedding_model = OpenAIEmbeddings(openai_api_key=config.OPENAI_API_KEY)
+embedding_model = AzureOpenAIEmbeddings(
+    openai_api_key=config.AZURE_OPENAI_KEY,
+    openai_api_base=config.AZURE_OPENAI_ENDPOINT,
+    openai_api_version=config.AZURE_OPENAI_VERSION,
+    deployment=config.AZURE_OPENAI_DEPLOYMENT
+)
 
 def hybrid_search(query, k=5):
     start_time = time.time()
