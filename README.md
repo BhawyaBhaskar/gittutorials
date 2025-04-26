@@ -1,52 +1,76 @@
-from azure.search.documents import SearchClient
-from azure.core.credentials import AzureKeyCredential
-import time
-from dotenv import load_dotenv
 import os
+from azure.search.documents.indexes import SearchIndexClient
+from azure.search.documents.indexes.models import (
+    SearchIndex,
+    SimpleField,
+    SearchableField,
+    ComplexField,
+    VectorSearch,
+    SearchFieldDataType
+)
+from azure.core.credentials import AzureKeyCredential
+from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Initialize the Azure Cognitive Search client
-search_client = SearchClient(
-    endpoint=os.getenv("AZURE_SEARCH_ENDPOINT"),
-    index_name=os.getenv("AZURE_SEARCH_INDEX_NAME"),
-    credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_ADMIN_KEY"))
+# Ensure the required environment variables are loaded
+search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
+search_api_key = os.getenv("AZURE_SEARCH_ADMIN_KEY")
+index_name = os.getenv("AZURE_SEARCH_INDEX_NAME")
+
+if not search_endpoint or not search_api_key or not index_name:
+    raise ValueError("Missing required environment variables in .env file")
+
+# Initialize the SearchIndexClient to manage indexes
+index_client = SearchIndexClient(
+    endpoint=search_endpoint,
+    credential=AzureKeyCredential(search_api_key)
 )
 
-def handle_search(query):
-    """Handle full-text, vector, and hybrid searches."""
-    print("Performing Full-Text Search:")
-    start_time = time.time()
-    full_text_results = perform_full_text_search(query)
-    print(f"Full-Text Search Results: {full_text_results}")
-    print(f"Full-Text Search took {time.time() - start_time:.2f} seconds.")
+def create_search_index():
+    """Create the Azure Cognitive Search index if it does not already exist."""
+    # Check if index exists
+    try:
+        existing_index = index_client.get_index(index_name)
+        print(f"Index '{index_name}' already exists.")
+        return existing_index
+    except Exception:
+        print(f"Index '{index_name}' does not exist. Creating a new one.")
 
-    print("\nPerforming Vector Search:")
-    start_time = time.time()
-    vector_results = perform_vector_search(query)
-    print(f"Vector Search Results: {vector_results}")
-    print(f"Vector Search took {time.time() - start_time:.2f} seconds.")
+    # Define the index schema with appropriate fields
+    index = SearchIndex(
+        name=index_name,
+        fields=[
+            SimpleField(name="id", type=SearchFieldDataType.STRING, key=True),
+            SearchableField(name="title", type=SearchFieldDataType.STRING),
+            SearchableField(name="description", type=SearchFieldDataType.STRING),
+            SearchableField(name="content", type=SearchFieldDataType.STRING),
+            ComplexField(name="embedding", fields=[
+                SimpleField(name="vector", type=SearchFieldDataType.Collection(SearchFieldDataType.Single))
+            ])
+        ]
+    )
+    
+    # Optionally: Add vector search configuration (for embeddings)
+    index.vector_search = VectorSearch(
+        algorithm_configurations=[
+            {
+                "name": "embedding",
+                "kind": "hnsw",
+                "dimensions": 1536  # Set the dimension based on your embeddings (e.g., OpenAI's embedding model)
+            }
+        ]
+    )
 
-    print("\nPerforming Hybrid Search:")
-    start_time = time.time()
-    hybrid_results = perform_hybrid_search(query)
-    print(f"Hybrid Search Results: {hybrid_results}")
-    print(f"Hybrid Search took {time.time() - start_time:.2f} seconds.")
+    # Create the index
+    try:
+        index_client.create_index(index)
+        print(f"Index '{index_name}' created successfully.")
+    except Exception as e:
+        print(f"Error creating index: {e}")
+        return None
 
-def perform_full_text_search(query):
-    """Perform a full-text search."""
-    results = search_client.search(query)
-    return [result['title'] for result in results]
-
-def perform_vector_search(query):
-    """Perform a vector search."""
-    vector = query  # For simplicity, assume query is a vector. Replace with actual vector logic.
-    results = search_client.search(query)  # Replace with actual vector search logic.
-    return [result['title'] for result in results]
-
-def perform_hybrid_search(query):
-    """Perform a hybrid search combining full-text and vector search."""
-    full_text_results = perform_full_text_search(query)
-    vector_results = perform_vector_search(query)
-    return list(set(full_text_results + vector_results))
+# Call the function to create the index
+if __name__ == "__main__":
+    create_search_index()
