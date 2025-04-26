@@ -1,79 +1,97 @@
 import os
-from azure.search.documents import SearchClient
-from azure.search.documents.indexes import SearchIndexClient
-from azure.search.documents.indexes.models import (
-    SearchIndex, 
-    SimpleField, 
-    SearchableField, 
-    ComplexField,
-    VectorSearch,
-    ScoringProfile,
-    TextWeights,
-    SearchFieldDataType
-)
-from azure.core.credentials import AzureKeyCredential
 from dotenv import load_dotenv
+from azure.search.documents import SearchClient
+from azure.core.credentials import AzureKeyCredential
+from langchain_openai import AzureOpenAIEmbeddings
+from utils import read_file
+from chunker import advanced_split
+from searches.search_functions import handle_search
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Initialize the SearchClient to interact with the search service
+# Initialize Azure Cognitive Search client
 search_client = SearchClient(
     endpoint=os.getenv("AZURE_SEARCH_ENDPOINT"),
     index_name=os.getenv("AZURE_SEARCH_INDEX_NAME"),
     credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_ADMIN_KEY"))
 )
 
-# Initialize the SearchIndexClient to manage indexes
-index_client = SearchIndexClient(
-    endpoint=os.getenv("AZURE_SEARCH_ENDPOINT"),
-    credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_ADMIN_KEY"))
+# Initialize OpenAI embeddings
+embedding_model = AzureOpenAIEmbeddings(
+    azure_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION")
 )
 
-def create_search_index():
-    """Create the Azure Cognitive Search index if it does not already exist."""
-    index_name = os.getenv("AZURE_SEARCH_INDEX_NAME")
+def upload_documents_from_folder(folder_path):
+    """Recursively upload documents from any folder on the system."""
+    if not os.path.exists(folder_path):
+        raise ValueError(f"The specified folder does not exist: {folder_path}")
 
-    # Check if index exists
+    all_records = []
+
+    # Walk through all subdirectories and files
+    for dirpath, _, filenames in os.walk(folder_path):
+        for filename in filenames:
+            filepath = os.path.join(dirpath, filename)
+            if filepath.endswith((".txt", ".docx", ".pdf")):
+                try:
+                    content = read_file(filepath)
+                    base_id = os.path.splitext(filename)[0]
+                    title = base_id
+                    description = f"Auto-uploaded file: {filename}"
+
+                    # Split into chunks and generate embeddings for each chunk
+                    chunks = advanced_split(content)
+
+                    for idx, chunk in enumerate(chunks):
+                        chunk_id = f"{base_id}_chunk_{idx}"
+                        vector = embedding_model.embed_query(chunk)
+
+                        record = {
+                            "id": chunk_id,
+                            "title": title,
+                            "description": description,
+                            "content": chunk,
+                            "embedding": vector
+                        }
+                        all_records.append(record)
+                except Exception as e:
+                    print(f"Error reading {filename}: {e}")
+
+    # Batch upload to Azure Cognitive Search
+    batch_size = 1000
+    total_uploaded = 0
+    for i in range(0, len(all_records), batch_size):
+        batch = all_records[i:i + batch_size]
+        try:
+            result = search_client.upload_documents(documents=batch)
+            total_uploaded += len(result)
+            print(f"Uploaded batch {i // batch_size + 1}: {len(batch)} documents.")
+        except Exception as e:
+            print(f"Error uploading batch {i // batch_size + 1}: {e}")
+
+    print(f"Total documents uploaded: {total_uploaded} documents.")
+
+    # Optionally, verify the upload by checking document count
+    verify_upload(total_uploaded)
+
+def verify_upload(expected_count):
+    """Verifies the number of documents in the index."""
     try:
-        existing_index = index_client.get_index(index_name)
-        print(f"Index '{index_name}' already exists.")
-        return existing_index
-    except Exception:
-        print(f"Index '{index_name}' does not exist. Creating a new one.")
+        result = search_client.search("*")  # Query all documents
+        actual_count = len(list(result))  # Count the results
 
-    # Define the index schema
-    index = SearchIndex(name=index_name)
-    
-    index.fields = [
-        SimpleField(name="id", type=SearchFieldDataType.STRING, key=True),
-        SearchableField(name="title", type=SearchFieldDataType.STRING),
-        SearchableField(name="description", type=SearchFieldDataType.STRING),
-        SearchableField(name="content", type=SearchFieldDataType.STRING),
-        ComplexField(name="embedding", fields=[
-            SimpleField(name="vector", type=SearchFieldDataType.Collection(SearchFieldDataType.Single))
-        ])
-    ]
-    
-    # Optionally: Add vector search configuration (for embeddings)
-    index.vector_search = VectorSearch(
-        algorithm_configurations=[
-            {
-                "name": "embedding",
-                "kind": "hnsw",
-                "dimensions": 1536  # Set the dimension based on your embeddings (e.g., OpenAI's embedding model)
-            }
-        ]
-    )
-
-    # Create the index
-    try:
-        index_client.create_index(index)
-        print(f"Index '{index_name}' created successfully.")
+        if actual_count == expected_count:
+            print(f"Upload successful. {actual_count} documents are now in the index.")
+        else:
+            print(f"Warning: Only {actual_count} documents found in the index, expected {expected_count}.")
     except Exception as e:
-        print(f"Error creating index: {e}")
-        return None
+        print(f"Error verifying upload: {e}")
 
-# Call the function to create the index
+# Automatically trigger document upload when the script is run
 if __name__ == "__main__":
-    create_search_index()
+    folder_path = "/path/to/your/documents"  # Change this path to your folder's path
+    upload_documents_from_folder(folder_path)
