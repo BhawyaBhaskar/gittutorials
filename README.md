@@ -1,162 +1,151 @@
 import os
 import time
-import openai
-from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
-from docx import Document
-import fitz  # PyMuPDF for PDFs
-from bs4 import BeautifulSoup
-
-# ===== CONFIG =====
-
-openai.api_type = "azure"
-openai.api_key = "YOUR_OPENAI_KEY"
-openai.api_version = "2023-05-15"
-openai.azure_endpoint = "https://YOUR-RESOURCE-NAME.openai.azure.com/"
-DEPLOYMENT_NAME = "YOUR_DEPLOYMENT_NAME"
-
-AZURE_SEARCH_ENDPOINT = "https://YOUR-SEARCH-NAME.search.windows.net"
-AZURE_SEARCH_KEY = "YOUR-SEARCH-ADMIN-KEY"
-AZURE_SEARCH_INDEX = "YOUR-INDEX-NAME"
-
-# ===== CLIENTS =====
-
-search_client = SearchClient(
-    endpoint=AZURE_SEARCH_ENDPOINT,
-    index_name=AZURE_SEARCH_INDEX,
-    credential=AzureKeyCredential(AZURE_SEARCH_KEY)
+from azure.search.documents import SearchClient
+from azure.search.documents.indexes import SearchIndexClient
+from azure.search.documents.indexes.models import (
+    SearchIndex,
+    SearchField,
+    SearchFieldDataType,
+    SimpleField,
+    SearchableField,
+    VectorSearch,
+    HnswAlgorithmConfiguration,
+    VectorSearchProfile,
 )
+from docx import Document
+import fitz  # PyMuPDF
+from typing import List
+from config import AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_KEY, AZURE_SEARCH_INDEX_NAME
 
-# ===== HELPERS =====
+# Initialize clients
+search_credential = AzureKeyCredential(AZURE_SEARCH_KEY)
+search_client = SearchClient(endpoint=AZURE_SEARCH_ENDPOINT, index_name=AZURE_SEARCH_INDEX_NAME, credential=search_credential)
+index_client = SearchIndexClient(endpoint=AZURE_SEARCH_ENDPOINT, credential=search_credential)
 
-def get_embedding(text: str) -> list:
-    response = openai.Embedding.create(
-        input=text,
-        model=DEPLOYMENT_NAME
-    )
-    return response['data'][0]['embedding']
+# Function to load DOCX
+def load_docx(file_path: str) -> str:
+    doc = Document(file_path)
+    return "\n".join([para.text for para in doc.paragraphs])
 
-def chunk_text(text, chunk_size=500, overlap=50):
+# Function to load PDF
+def load_pdf(file_path: str) -> str:
+    doc = fitz.open(file_path)
+    return "\n".join([page.get_text() for page in doc])
+
+# Function to load TXT
+def load_txt(file_path: str) -> str:
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return f.read()
+
+# General loader based on file extension
+def load_document(file_path: str) -> str:
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".pdf":
+        return load_pdf(file_path)
+    elif ext == ".docx":
+        return load_docx(file_path)
+    elif ext == ".txt":
+        return load_txt(file_path)
+    else:
+        print(f"Unsupported file type: {ext}")
+        return ""
+
+# Split text into chunks
+def split_text(text: str, chunk_size=500, overlap=50) -> List[str]:
     chunks = []
     start = 0
     while start < len(text):
-        end = start + chunk_size
+        end = min(start + chunk_size, len(text))
         chunks.append(text[start:end])
         start += chunk_size - overlap
     return chunks
 
-def load_txt(path):
-    with open(path, 'r', encoding='utf-8') as f:
-        return f.read()
+# Function to create the index
+def create_index():
+    fields = [
+        SimpleField(name="id", type=SearchFieldDataType.String, key=True),
+        SearchableField(name="title", type=SearchFieldDataType.String),
+        SearchableField(name="content", type=SearchFieldDataType.String),
+        SearchField(name="contentVector", type=SearchFieldDataType.Collection(SearchFieldDataType.Single), vector_search_dimensions=1536, vector_search_profile_name="default"),
+    ]
 
-def load_docx(path):
-    doc = Document(path)
-    return "\n".join([p.text for p in doc.paragraphs])
-
-def load_pdf(path):
-    doc = fitz.open(path)
-    return "\n".join([page.get_text() for page in doc])
-
-def load_html(path):
-    with open(path, 'r', encoding='utf-8') as f:
-        soup = BeautifulSoup(f, 'html.parser')
-        return soup.get_text()
-
-def load_document(path):
-    ext = path.split('.')[-1].lower()
-    if ext == 'txt':
-        return load_txt(path)
-    elif ext == 'docx':
-        return load_docx(path)
-    elif ext == 'pdf':
-        return load_pdf(path)
-    elif ext == 'html':
-        return load_html(path)
-    else:
-        return ""
-
-def index_document_chunks(file_path):
-    doc_id = os.path.splitext(os.path.basename(file_path))[0]
-    raw_text = load_document(file_path)
-    chunks = chunk_text(raw_text)
-
-    documents = []
-    for i, chunk in enumerate(chunks):
-        if not chunk.strip():
-            continue
-        embedding = get_embedding(chunk)
-        doc = {
-            "id": f"{doc_id}_chunk_{i+1}",
-            "title": doc_id,
-            "content": chunk,
-            "description": chunk[:150],
-            "embedding": embedding
-        }
-        documents.append(doc)
-
-    result = search_client.upload_documents(documents=documents)
-    print(f"Uploaded {len(documents)} chunks from {file_path}. Result: {result}")
-
-def process_folder(folder_path):
-    for file in os.listdir(folder_path):
-        full_path = os.path.join(folder_path, file)
-        if os.path.isfile(full_path):
-            index_document_chunks(full_path)
-
-# ===== SEARCHES =====
-
-def vector_search(query: str):
-    vector = get_embedding(query)
-
-    start_time = time.time()
-
-    results = search_client.search(
-        search_text=None,
-        vector={
-            "value": vector,
-            "k": 5,
-            "fields": "embedding"
-        },
-        top=5
+    vector_search = VectorSearch(
+        profiles=[VectorSearchProfile(name="default", algorithm_configuration_name="default")],
+        algorithms=[HnswAlgorithmConfiguration(name="default")]
     )
 
-    end_time = time.time()
+    index = SearchIndex(
+        name=AZURE_SEARCH_INDEX_NAME,
+        fields=fields,
+        vector_search=vector_search
+    )
 
-    print(f"Vector search took {end_time - start_time:.3f} seconds")
+    # Delete if exists
+    if index_client.get_index(AZURE_SEARCH_INDEX_NAME):
+        index_client.delete_index(AZURE_SEARCH_INDEX_NAME)
 
-    for result in results:
-        print(f"ID: {result['id']}")
-        print(f"Content: {result['content'][:200]}")
-        print("---")
+    index_client.create_index(index)
+    print(f"Index '{AZURE_SEARCH_INDEX_NAME}' created successfully.")
 
+# Function to upload documents
+def upload_documents(folder_path: str):
+    for filename in os.listdir(folder_path):
+        filepath = os.path.join(folder_path, filename)
+        if not os.path.isfile(filepath):
+            continue
+
+        text = load_document(filepath)
+        if not text:
+            continue
+
+        chunks = split_text(text)
+
+        documents = []
+        doc_id_base = os.path.splitext(filename)[0]
+
+        for i, chunk in enumerate(chunks):
+            documents.append({
+                "id": f"{doc_id_base}_chunk_{i}",
+                "title": doc_id_base,
+                "content": chunk,
+                "contentVector": None  # Let Azure AI Search auto-generate embeddings
+            })
+
+        result = search_client.upload_documents(documents)
+        print(f"Uploaded {len(documents)} documents from {filename}. Result: {result}")
+
+# Hybrid Search (Text + Vector)
 def hybrid_search(query: str):
-    vector = get_embedding(query)
-
-    start_time = time.time()
+    from datetime import datetime
+    start_time = datetime.now()
 
     results = search_client.search(
         search_text=query,
-        vector={
-            "value": vector,
-            "k": 5,
-            "fields": "embedding"
-        },
-        top=5,
-        query_type="semantic"  # optional, only if you have semantic config
+        vector={"value": None, "fields": "contentVector", "kNearestNeighborsCount": 3},
+        top=3
     )
 
-    end_time = time.time()
+    for doc in results:
+        print(doc)
 
-    print(f"Hybrid search took {end_time - start_time:.3f} seconds")
+    end_time = datetime.now()
+    print(f"Query took: {(end_time - start_time).total_seconds()} seconds.")
 
-    for result in results:
-        print(f"ID: {result['id']}")
-        print(f"Content: {result['content'][:200]}")
-        print("---")
+# Vector-only Search
+def vector_search(vector: List[float]):
+    from datetime import datetime
+    start_time = datetime.now()
 
-# ====== USAGE ======
+    results = search_client.search(
+        search_text=None,
+        vector={"value": vector, "fields": "contentVector", "kNearestNeighborsCount": 3},
+        top=3
+    )
 
-# Example usage
-# process_folder("./docs")  # <-- Your folder with documents
-# vector_search("What is AI?")
-# hybrid_search("Benefits of machine learning")
+    for doc in results:
+        print(doc)
+
+    end_time = datetime.now()
+    print(f"Vector Query took: {(end_time - start_time).total_seconds()} seconds.")
+
