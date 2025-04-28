@@ -1,77 +1,54 @@
-# create_index.py
+# vector_search.py
 
 import time
 from azure.core.credentials import AzureKeyCredential
-from azure.search.documents.indexes import SearchIndexClient
-from azure.search.documents.indexes.models import (
-    SearchIndex,
-    SearchField,
-    SearchFieldDataType,
-    SimpleField,
-    SearchableField,
-    SearchFieldVectorSearchConfiguration,
-    VectorSearch,
-    VectorSearchProfile,
-    ExhaustiveKnnAlgorithmConfiguration,
-)
+from azure.search.documents import SearchClient
 
 # ========== CONFIG ==========
 
 AZURE_SEARCH_ENDPOINT = "https://<your-search-service>.search.windows.net"
 AZURE_SEARCH_KEY = "<your-admin-key>"
 AZURE_SEARCH_INDEX_NAME = "your-index-name"
+AZURE_EMBEDDING_DEPLOYMENT = "<your-embedding-deployment-name>"
 
 credential = AzureKeyCredential(AZURE_SEARCH_KEY)
-index_client = SearchIndexClient(endpoint=AZURE_SEARCH_ENDPOINT, credential=credential)
+search_client = SearchClient(endpoint=AZURE_SEARCH_ENDPOINT, index_name=AZURE_SEARCH_INDEX_NAME, credential=credential)
 
-# ========== FUNCTION TO CREATE INDEX ==========
+# ========== VECTOR SEARCH FUNCTION ==========
 
-def create_index():
+def vector_search(user_query, k=5):
+    # Generate the embedding for the user query
+    embedding_response = search_client.embed_query(
+        search_text=user_query,
+        deployment_name=AZURE_EMBEDDING_DEPLOYMENT,
+        embedding_field_name="contentVector"
+    )
+    vector = embedding_response["embedding"]
+
+    # Perform vector search
     start_time = time.time()
-
-    fields = [
-        SimpleField(name="id", type=SearchFieldDataType.String, key=True),
-        SearchableField(name="content", type=SearchFieldDataType.String),
-        SearchField(
-            name="contentVector",
-            type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-            vector_search_dimensions=1536,
-            vector_search_configuration="exhaustive-knn-config"
-        )
-    ]
-
-    vector_search = VectorSearch(
-        profiles=[
-            VectorSearchProfile(
-                name="exhaustive-knn-profile",
-                algorithm_configuration_name="exhaustive-knn-config"
-            )
-        ],
-        algorithms=[
-            ExhaustiveKnnAlgorithmConfiguration(
-                name="exhaustive-knn-config"
-            )
-        ]
+    
+    results = search_client.search(
+        search_text=None,  # Vector-only search => no keyword text
+        vector={
+            "value": vector,
+            "k": k,
+            "fields": "contentVector"
+        },
+        top=k
     )
-
-    index = SearchIndex(
-        name=AZURE_SEARCH_INDEX_NAME,
-        fields=fields,
-        vector_search=vector_search
-    )
-
-    # Delete if exists
-    try:
-        index_client.delete_index(AZURE_SEARCH_INDEX_NAME)
-        print(f"Deleted existing index: {AZURE_SEARCH_INDEX_NAME}")
-    except Exception:
-        print(f"No existing index found: {AZURE_SEARCH_INDEX_NAME}")
-
-    index_client.create_index(index)
-    print(f"Created new index: {AZURE_SEARCH_INDEX_NAME}")
 
     end_time = time.time()
-    print(f"Time taken to create index: {end_time - start_time:.2f} seconds")
+
+    print(f"\nTop {k} Vector Search Results:")
+    for idx, result in enumerate(results):
+        print(f"{idx + 1}. ID: {result['id']}")
+        print(f"   Content: {result['content'][:200]}...\n")  # Show first 200 characters
+
+    print(f"Time taken for vector search: {end_time - start_time:.2f} seconds")
+
+# ========== MAIN ==========
 
 if __name__ == "__main__":
-    create_index()
+    query = input("Enter your query for vector search: ")
+    vector_search(query)
