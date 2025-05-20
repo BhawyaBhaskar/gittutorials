@@ -1,42 +1,63 @@
-async def process_log_data(log_data: str) -> str:
-    return f"Processed log data (preview): {log_data[:100]}..."
+from openai import AzureOpenAI
+import asyncio
+import json
+from your_tools_file import tools, tool_functions  # Assume tools and tool handlers are imported
 
-async def analyze_dependency_data(log: str, table: str) -> str:
-    return f"Analyzed dependency table '{table}' from log."
+client = AzureOpenAI(
+    api_key="YOUR_KEY",
+    azure_endpoint="https://YOUR_ENDPOINT.openai.azure.com/",
+    api_version="2023-05-15"
+)
 
-tool_functions = {
-    "process_log_data": process_log_data,
-    "analyze_dependency_data": analyze_dependency_data,
-}
+deployment_name = "your-deployment-name"
 
-tool_schemas = [
-    {
-        "type": "function",
-        "function": {
-            "name": "process_log_data",
-            "description": "Processes raw log data",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "log_data": {"type": "string"},
-                },
-                "required": ["log_data"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "analyze_dependency_data",
-            "description": "Analyzes dependency data from logs",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "log": {"type": "string"},
-                    "table": {"type": "string"},
-                },
-                "required": ["log", "table"]
-            }
-        }
-    }
-]
+print("🤖 Agent ready. Type 'exit' to stop.")
+
+while True:
+    user_input = input("You: ")
+    if user_input.lower() in ["exit", "quit"]:
+        break
+
+    messages.append({"role": "user", "content": user_input})
+
+    # First call — see if tool call is needed
+    response = client.chat.completions.create(
+        model=deployment_name,
+        messages=messages,
+        tools=tools,
+        tool_choice="auto"
+    )
+    response_message = response.choices[0].message
+    messages.append(response_message)
+
+    # If the model decided to call a function/tool
+    if hasattr(response_message, "tool_calls"):
+        for tool_call in response_message.tool_calls:
+            function_name = tool_call.function.name
+            function_args = json.loads(tool_call.function.arguments)
+
+            tool_func = tool_functions.get(function_name)
+            if not tool_func:
+                tool_response = json.dumps({"error": f"Unknown function {function_name}"})
+            else:
+                tool_response = await tool_func(**function_args)
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": function_name,
+                "content": tool_response,
+            })
+
+        # Final call — respond naturally
+        final_response = client.chat.completions.create(
+            model=deployment_name,
+            messages=messages
+        )
+        final_message = final_response.choices[0].message
+        messages.append(final_message)
+        print("Agent:", final_message.content)
+
+    else:
+        # No tool was called, return direct answer
+        print("Agent:", response_message.content)
